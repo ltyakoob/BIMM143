@@ -1,0 +1,219 @@
+---
+title: "Class 14: RNASeq Mini Project"
+author: "Lourd Yakoob (PID: A18543409)"
+format: pdf
+toc: TRUE
+---
+
+## Background
+
+Here we work through a complete RNASeq analysis project. The input data comes from a knock-down experiment of a HOX gene. 
+
+## Data Import
+
+Reading the `counts` and `metadata` CSV files
+
+```{r}
+metaFile <- "GSE37704_metadata.csv"
+countFile <- "GSE37704_featurecounts.csv"
+colData = read.csv(metaFile, row.names=1)
+countData = read.csv(countFile, row.names=1)
+```
+
+Check on data structure 
+
+
+Some book-keeping is required as there looks to be a mis-match between metadata and counts columns.
+
+Looks like we need to get rid of the first "length" column of our `counts` object.
+
+```{r}
+countData <- read.csv(countFile, row.names = 1)
+countData[] <- lapply(countData, function(x) as.numeric(as.character(x)))
+cleancounts <- as.matrix(countData[, -1])
+nonzero_counts <- cleancounts[rowSums(cleancounts) > 0, ]
+head(nonzero_counts)
+```
+
+
+## DESeq Analysis
+
+Load the package
+
+```{r, message=FALSE}
+library(DESeq2)
+```
+
+Setup DESeq 
+
+```{r, message=FALSE}
+dds = DESeqDataSetFromMatrix(countData=nonzero_counts,
+                             colData=colData,
+                             design=~condition)
+```
+
+Run DESeq
+
+```{r, message=FALSE}
+dds <- DESeq(dds)
+```
+
+Get results
+
+```{r}
+res <- results(dds)
+```
+
+
+## Data Visualization
+
+Volcano Plot
+
+```{r}
+library(ggplot2)
+
+ggplot(res) +
+  aes(log2FoldChange, -log(padj)) +
+  geom_point()
+```
+
+Add threshold lines for fold-change and P-valye and color our subset of genes that make these threshold cut-offs in the plot.
+
+```{r}
+mycols <- rep("gray", nrow(res))
+mycols[abs(res$log2FoldChange) > 2] <- "blue"
+mycols[ res$padj > 0.05] <- "gray"
+
+
+ggplot(res) +
+  aes(log2FoldChange, -log(padj)) +
+  geom_point(col = mycols) +
+  geom_vline(xintercept =c(-2,2), col="red") +
+  geom_hline(yintercept = -log(0.05), col ="red")
+```
+
+
+## Add Annotation
+
+Add gene symbols and entrez ids
+
+```{r}
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+```
+
+```{r}
+res$symbol = mapIds(org.Hs.eg.db,
+                    keys = row.names(res),
+                    keytype = "ENSEMBL",
+                    column = "SYMBOL",
+                    multiVals = "first")
+
+res$entrez = mapIds(org.Hs.eg.db,
+                    keys = row.names(res),  
+                    keytype = "ENSEMBL",
+                    column = "ENTREZID",
+                    multiVals = "first")
+
+res$name = mapIds(org.Hs.eg.db,
+                  keys = row.names(res),  
+                  keytype = "ENSEMBL",
+                  column = "GENENAME",
+                  multiVals = "first")
+
+head(res, 10)
+```
+
+Let's Reorder results by adjusted p-value and save as CSV file: 
+
+```{r}
+res <- res[order(res$padj), ]
+
+write.csv(res, file = "deseq_results.csv")
+```
+
+## Pathway Analysis
+
+### KEGG pathways 
+
+* run this in console: `BiocManager::install( c("pathview", "gage", "gageData") )` *
+
+Run gage analysis w/ KEGG
+
+```{r, message=FALSE}
+library(gage)
+library(gageData)
+library(pathview)
+```
+
+We need a named vector of fold-change value as input for gage.
+
+```{r}
+foldchanges <- res$log2FoldChange
+names(foldchanges) <- res$entrez
+head(foldchanges)
+data("kegg.sets.hs")
+keggres = gage(foldchanges, gsets=kegg.sets.hs)
+```
+
+```{r}
+head(keggres$less, 2)
+```
+
+```{r}
+pathview(pathway.id = "hsa04110", gene.data = foldchanges)
+```
+
+![](hsa04110.pathview.png)
+
+```{r}
+pathview(pathway.id = "hsa03030", gene.data = foldchanges)
+```
+
+![](hsa03030.pathview.png)
+
+### GO terms
+
+Same analysis but using GO genesets rather than KEGG.
+
+```{r, message=FALSE}
+data(go.sets.hs)
+data(go.subs.hs)
+
+gobpsets = go.sets.hs[go.subs.hs$BP]
+
+gobpres = gage(foldchanges, gsets=gobpsets, same.dir=TRUE)
+
+lapply(gobpres, head)
+```
+
+
+```{r}
+head(gobpres$less, 4)
+```
+
+### Reactome
+
+Lots of folkslike the reactome web interface. You can also run this as an R fucntion but lets look at the website first
+ <https://reactome.org/>
+
+The website wants a text file with one gene symbol per line of the genes ypu want to map to the pathways.
+
+```{r}
+sig_genes <- res[res$padj <= 0.05 & !is.na(res$padj), "symbol"]
+print(paste("Total number of significant genes:", length(sig_genes)))
+```
+
+and write out to a file: 
+
+```{r}
+write.table(sig_genes, file="significant_genes.txt", row.names=FALSE, col.names=FALSE, quote=FALSE)
+```
+
+## Save Our Results
+
+```{r}
+write.csv(res, file="myresults.csv")
+```
+
+
